@@ -1,5 +1,4 @@
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-import dataiku
 import pandas as pd
 import numpy as np
 import os
@@ -25,9 +24,9 @@ client = AzureOpenAI(
 # Set the chunk size for reading the large dataset
 chunk_size = 2000000  # Adjust as needed based on memory constraints
  
-# Define the Dataiku datasets
-Transaction_clean_temp = dataiku.Dataset("TEMP_MERCHANT_DATA_CLEANED_SQL")
-MERCHANT_CATEGORY_MASTER_LIST = dataiku.Dataset("MERCHANT_CATEGORY_MASTER_LIST")
+# Define the ............... datasets
+Transaction_clean_temp = ................Dataset("TEMP_MERCHANT_DATA_CLEANED_SQL")
+MERCHANT_CATEGORY_MASTER_LIST = ................Dataset("MERCHANT_CATEGORY_MASTER_LIST")
  
 # Define known patterns and their corresponding cleansed names and categories
 known_patterns = {
