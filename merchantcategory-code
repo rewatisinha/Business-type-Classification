@@ -1,0 +1,200 @@
+# -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
+import dataiku
+import pandas as pd
+import numpy as np
+import os
+import certifi
+import time
+from openai import AzureOpenAI
+from dotenv import load_dotenv, find_dotenv
+ 
+certifi.where()
+_ = load_dotenv(find_dotenv())
+ 
+# Set the environment variables for Snowflake timeouts
+os.environ['SNOWFLAKE_NETWORK_TIMEOUT'] = '7200'  # 2 hours
+os.environ['SNOWFLAKE_QUERY_TIMEOUT'] = '7200'    # 2 hours
+os.environ['AZURE_OPENAI_API_KEY'] = '......................'
+ 
+# Initialize OpenAI API using environment variables for security
+client = AzureOpenAI(
+    api_version="2023-07-01-preview",
+    azure_endpoint="https://oai-predictive.openai.azure.com/",
+)
+ 
+# Set the chunk size for reading the large dataset
+chunk_size = 2000000  # Adjust as needed based on memory constraints
+ 
+# Define the Dataiku datasets
+Transaction_clean_temp = dataiku.Dataset("TEMP_MERCHANT_DATA_CLEANED_SQL")
+MERCHANT_CATEGORY_MASTER_LIST = dataiku.Dataset("MERCHANT_CATEGORY_MASTER_LIST")
+ 
+# Define known patterns and their corresponding cleansed names and categories
+known_patterns = {
+    'amzn mktp': ('Amazon', 'E-Commerce'),
+    'amazoncom': ('Amazon', 'E-Commerce'),
+    'cash app': ('Cash App', 'Financial Services')
+}
+ 
+# Counter for records sent to OpenAI
+records_sent_to_openai = 0
+ 
+def get_completion(prompt, model="gpt-4o"):
+    messages = [{"role": "user", "content": prompt}]
+    response = client.chat.completions.create(
+        model=model,
+        messages=messages,
+        temperature=0  # this is the degree of randomness of the model's output
+    )
+    return response
+ 
+# -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
+def process_sub_chunk(sub_chunk, processed_merchants):
+    global records_sent_to_openai  # To modify the global variable inside this function
+ 
+    # Extract merchant names and SIC codes into a dictionary
+    merchant_dict = {row['FINAL_MERCHANT_NAME']: row['MERCHANT_SIC_CODE'] for _, row in sub_chunk.iterrows()}
+ 
+    merchant_names = list(merchant_dict.keys())
+    if len(merchant_names) == 0:
+        return None
+ 
+    new_rows = []
+    remaining_merchant_names = []
+ 
+    for merchant_name in merchant_names:
+        merchant_name_lower = merchant_name.lower()
+ 
+        # Check if the merchant name matches any known patterns
+        matched = False
+        for pattern, (cleansed_name, category) in known_patterns.items():
+            if pattern in merchant_name_lower:
+                merchant_sic_code = merchant_dict.get(merchant_name)
+                new_rows.append([merchant_name, merchant_sic_code, cleansed_name, category])
+                processed_merchants.add(merchant_name)
+                matched = True
+                break
+ 
+        if not matched and merchant_name not in processed_merchants:
+            remaining_merchant_names.append(merchant_name)
+ 
+    # Batch size for sending records to OpenAI
+    batch_size = 20  # Adjust this number based on your needs
+ 
+    # Batch remaining merchant names and send to OpenAI
+    if remaining_merchant_names:
+        for i in range(0, len(remaining_merchant_names), batch_size):
+            batch = remaining_merchant_names[i:i + batch_size]
+            prompt = """You will be provided with a transaction description.
+            You have to act as a transaction mapper for banks and credit unions.
+            Associate the transaction ACH data to the company generic name and industry category in a uniform pattern.
+            Give the full name of the company in the company generic name and as generic as possible.
+            Return the output in structured table format columns include transaction_desc, company_generic_name, industry_category.
+            Return only the table in the output.
+ 
+            ''' \n{0}
+            """.format("\n".join(batch))
+            #print(prompt)
+            try:
+                time.sleep(5)  # To respect API rate limits
+                response = get_completion(prompt)
+                print(response.choices[0].message.content)
+                # Check if the response or content is None before processing
+                if response is None or response.choices[0].message.content is None:
+                    raise ValueError("Response from API is None")
+                    #print(response.choices[0].message.content)
+ 
+                lines = response.choices[0].message.content.strip().split("\n")[2:]
+                for line in lines:
+                    fields = [i.strip() for i in line.split("|")]
+                    if len(fields) >= 3:
+                        transaction_desc, merchant_generic, merchant_category = fields[1], fields[2], fields[3]
+                        merchant_sic_code = merchant_dict.get(transaction_desc)
+                        new_rows.append([transaction_desc, merchant_sic_code, merchant_generic, merchant_category])
+                        processed_merchants.add(transaction_desc)
+ 
+                # Update the counter after processing the batch
+                records_sent_to_openai += len(batch)
+                print(f"Records sent to OpenAI so far: {records_sent_to_openai}")
+ 
+            except Exception as e:
+                print(f"Error processing batch: {type(e).__name__} - {str(e)}")
+ 
+    if new_rows:
+        return pd.DataFrame(new_rows, columns=['MERCHANT_NAME', 'MERCHANT_SIC_CODE', 'MERCHANT_CLEANSED_NAME', 'MERCHANT_CATEGORY'])
+ 
+    return None
+ 
+def remove_null_sic_code_duplicates(df):
+    # Separate rows with null and non-null MERCHANT_SIC_CODE
+    null_sic_df = df[df['MERCHANT_SIC_CODE'].isnull()]
+    non_null_sic_df = df[df['MERCHANT_SIC_CODE'].notnull()]
+ 
+    # Drop duplicates in each group, keeping the first occurrence
+    null_sic_df = null_sic_df.drop_duplicates(subset=['MERCHANT_NAME'], keep='first')
+    non_null_sic_df = non_null_sic_df.drop_duplicates(subset=['MERCHANT_NAME'], keep='first')
+ 
+    # Combine the results back together
+    df = pd.concat([null_sic_df, non_null_sic_df])
+ 
+    return df
+ 
+def process_chunk(chunk, processed_merchants):
+    # Refresh the master list and add to the processed_merchants set
+    MERCHANT_CATEGORY_MASTER_LIST_df = MERCHANT_CATEGORY_MASTER_LIST.get_dataframe(columns=['MERCHANT_NAME'])
+    processed_merchants.update(MERCHANT_CATEGORY_MASTER_LIST_df['MERCHANT_NAME'].tolist())
+ 
+    chunk = chunk.drop_duplicates(subset=['FINAL_MERCHANT_NAME'])
+    chunk = chunk[~chunk['FINAL_MERCHANT_NAME'].isin(processed_merchants)]
+    chunk = chunk.dropna(subset=['FINAL_MERCHANT_NAME'])
+ 
+    if chunk.empty:
+        print("Chunk is empty after filtering. Skipping.")
+        return None
+ 
+    sub_chunks = np.array_split(chunk, int(len(chunk) / 1000) + 1)
+ 
+    new_merchants_rows = []
+ 
+    for sub_chunk in sub_chunks:
+        result_df = process_sub_chunk(sub_chunk, processed_merchants)
+        if result_df is not None and not result_df.empty:
+            new_merchants_rows.append(result_df)
+ 
+    if not new_merchants_rows:
+        print("No new data to process in this chunk.")
+        return None
+ 
+    # Concatenate and remove duplicates with null SIC codes
+    new_merchants_df = pd.concat(new_merchants_rows, ignore_index=True).drop_duplicates(subset=['MERCHANT_NAME'])
+    new_merchants_df = remove_null_sic_code_duplicates(new_merchants_df)
+ 
+    return new_merchants_df
+ 
+def read_data_with_retries(dataset, chunk_size, max_retries=3):
+    """Read data from a dataset with retry mechanism."""
+    for retry in range(max_retries):
+        try:
+            return dataset.iter_dataframes(columns=['FINAL_MERCHANT_NAME', 'MERCHANT_SIC_CODE'], chunksize=chunk_size)
+        except Exception as e:
+            print(f"Attempt {retry + 1} failed: {e}")
+            time.sleep(10)  # Wait before retrying
+    raise Exception("Failed to read data after multiple attempts.")
+ 
+# Initialize a set to keep track of processed merchants
+processed_merchants = set()
+ 
+# Iterate through the dataset in chunks
+chunks = read_data_with_retries(Transaction_clean_temp, chunk_size)
+for idx, chunk in enumerate(chunks, start=1):
+    print(f"Processing chunk {idx}...")
+    new_merchants_df = process_chunk(chunk, processed_merchants)
+    if new_merchants_df is not None and not new_merchants_df.empty:
+        # Uncomment below to write to the dataset if needed
+        # MERCHANT_CATEGORY_MASTER_LIST.write_with_schema(new_merchants_df)
+        print(f"Processed chunk {idx} and obtained {len(new_merchants_df)} new merchant records.")
+    else:
+        print(f"No new merchant records found in chunk {idx}.")
+ 
+print("Processing complete.")
+print(f"Total records sent to OpenAI: {records_sent_to_openai}")
