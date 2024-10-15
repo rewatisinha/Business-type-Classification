@@ -1,15 +1,14 @@
-# **Business Type Classification **
+# Business Type Classification
+This project automates the classification of business types from transaction data. The workflow extracts business names from raw transaction data and utilizes an AI-powered natural language processing model to return cleaned-up business names with corresponding category classifications (e.g., Retail, Grocery, Entertainment, etc.). This enhances the accuracy of transaction classification, providing valuable insights for financial analysis and business modeling. Edge cases and ambiguous names are handled through a combination of machine learning techniques and rule-based systems to ensure high accuracy.
 
-This project automates the business type classification from transaction data. The workflow involves extracting business type names from raw transaction data and sending them to ChatGPT to return a cleaned-up business type name along with a suitable category classification (e.g., Retail, Grocery, Entertainment, etc.). This process helps improve the accuracy of transaction classification, enabling better insights into customer spending behavior. Edge cases and ambiguous names are handled through a combination of machine learning and rule-based systems to ensure high accuracy.
+# Key Features:
+Automated cleaning and classification of business names using AI.
+Intelligent categorization of transactions for improved data quality.
+Scalable and adaptable to different transaction datasets.
+Enhanced accuracy for downstream reporting or segmentation purposes.
 
-Key Features:
-- Automated business type name cleaning using AI.
-- Intelligent classification of transactions.
-- Scalable and adaptable to different transaction datasets.
-- Enhanced accuracy for downstream financial reporting or customer segmentation.
-
-Tech Stack:
-- Python
-- OpenAI GPT API
-- Data processing (Pandas)
-- Integration with financial transaction datasets
+# Tech Stack:
+Python
+AI-powered NLP model
+Data processing with Pandas
+Integration with financial transaction datasets
